@@ -9,200 +9,216 @@
 -- ===============================================================
 -- 1) RASTÚ V PRIEBEHU ROKOV MZDY VO VŠETKÝCH ODVETVIACH,
 --    ALEBO V NIEKTORÝCH KLESAJÚ?
--- 
 -- Logika:
--- - Najprv zjednodušíme dáta na úroveň: rok + odvetvie + priemerná mzda
---   (naprieč potravinami).
--- - Potom spočítame medziročný rast mzdy pre každé odvetvie.
--- - Výsledok: tabuľka s medziročným rastom mzdy v % pre každé odvetvie a rok.
+--  - Najprv agregujeme priemerné mzdy na úroveň (rok, odvetvie).
+--  - Potom vypočítame predchádzajúcu hodnotu mzdy raz pomocou LAG() v CTE.
+--  - Nakoniec spočítame medziročný rast (%) s ochranou proti NULL.
 -- ===============================================================
 
-WITH mzdy_agg AS (
-    SELECT 
-        rok,
-        odvetvie,
-        AVG(priemerna_mzda) AS priemerna_mzda
+WITH MZDY_AGG AS (
+    SELECT
+        ROK,
+        ODVETVIE,
+        AVG(PRIMERNA_MZDA) AS PRIEMERNA_MZDA
     FROM t_viktoria_cervenanska_project_SQL_primary_final
-    GROUP BY rok, odvetvie
+    GROUP BY ROK, ODVETVIE
 ),
-rast_miezd AS (
-    SELECT 
-        odvetvie,
-        rok,
-        ROUND(priemerna_mzda, 2) AS priemerna_mzda,
-        LAG(ROUND(priemerna_mzda, 2)) OVER (PARTITION BY odvetvie ORDER BY rok) AS predosla_mzda,
-        ROUND(
-            (
-                priemerna_mzda 
-                - LAG(priemerna_mzda) OVER (PARTITION BY odvetvie ORDER BY rok)
-            )
-            / LAG(priemerna_mzda) OVER (PARTITION BY odvetvie ORDER BY rok) * 100
-        , 2) AS medzirocny_rast_miezd_percent
-    FROM mzdy_agg
+MZDY_LAG AS (
+    -- LAG počítame raz pre každé odvetvie
+    SELECT
+        ODVETVIE,
+        ROK,
+        PRIEMERNA_MZDA,
+        LAG(PRIEMERNA_MZDA) OVER (PARTITION BY ODVETVIE ORDER BY ROK) AS PREDSLA_MZDA
+    FROM MZDY_AGG
 )
-SELECT *
-FROM rast_miezd
-ORDER BY odvetvie, rok;
-
--- Ak chceš vidieť len odvetvia, kde mzdy niekedy klesli, môžeš spustiť:
--- SELECT * FROM rast_miezd WHERE medzirocny_rast_miezd_percent < 0;
+SELECT
+    ODVETVIE,
+    ROK,
+    ROUND(PRIEMERNA_MZDA::NUMERIC, 2) AS PRIEMERNA_MZDA,
+    ROUND(PREDSLA_MZDA::NUMERIC, 2) AS PREDSLA_MZDA,
+    CASE
+        WHEN PREDSLA_MZDA IS NULL OR PREDSLA_MZDA = 0 THEN NULL
+        ELSE ROUND(((PRIEMERNA_MZDA - PREDSLA_MZDA) / PREDSLA_MZDA)::NUMERIC * 100, 2)
+    END AS MEDZIROCNY_RST_MIEZD_PERCENT
+FROM MZDY_LAG
+ORDER BY ODVETVIE, ROK;
 
 
 -- ===============================================================
 -- 2) KOĽKO LITROV MLIEKA A KILOGRAMOV CHLEBA SI MOŽNO KÚPIŤ
 --    V PRVOM A POSLEDNOM SPOLOČNOM OBDOBÍ?
---
 -- Logika:
--- - Najprv zistíme prvý a posledný rok v primárnej tabuľke.
--- - Zjednodušíme dáta na: rok + potravina + priemerná mzda + priemerná cena
---   (naprieč odvetviami).
--- - Potom pre vybrané potraviny (chlieb, mlieko) spočítame:
---     priemerná mzda / priemerná cena = množstvo, ktoré je možné kúpiť.
+--  - Zistíme prvý a posledný rok.
+--  - Agregujeme priemernú mzdu a priemernú cenu pre kombináciu (rok, potravina).
+--  - Vypočítame pomer mzda / cena pre prvý a posledný rok.
 -- ===============================================================
 
-WITH roky AS (
-    SELECT 
-        MIN(rok) AS prvy_rok,
-        MAX(rok) AS posledny_rok
+WITH ROKY AS (
+    SELECT
+        MIN(ROK) AS PRVY_ROK,
+        MAX(ROK) AS POSLEDNY_ROK
     FROM t_viktoria_cervenanska_project_SQL_primary_final
 ),
-agreg AS (
-    SELECT 
-        rok,
-        potravina,
-        AVG(priemerna_mzda) AS priemerna_mzda,
-        AVG(priemerna_cena) AS priemerna_cena
+AGREG AS (
+    SELECT
+        ROK,
+        POTRAVINA,
+        AVG(PRIMERNA_MZDA)   AS PRIEMERNA_MZDA,
+        AVG(PRIMERNA_CENA)   AS PRIEMERNA_CENA
     FROM t_viktoria_cervenanska_project_SQL_primary_final
-    GROUP BY rok, potravina
+    GROUP BY ROK, POTRAVINA
 )
-SELECT 
-    a1.potravina,
-    r.prvy_rok,
-    r.posledny_rok,
-    ROUND(a1.priemerna_mzda / a1.priemerna_cena, 2) AS mnozstvo_v_prvom_roku,
-    ROUND(a2.priemerna_mzda / a2.priemerna_cena, 2) AS mnozstvo_v_poslednom_roku
-FROM roky r
-JOIN agreg a1 
-    ON a1.rok = r.prvy_rok
-JOIN agreg a2 
-    ON a2.rok = r.posledny_rok
-   AND a1.potravina = a2.potravina
-WHERE a1.potravina IN (
+SELECT
+    A1.POTRAVINA,
+    R.PRVY_ROK,
+    R.POSLEDNY_ROK,
+    ROUND(A1.PRIEMERNA_MZDA / NULLIF(A1.PRIEMERNA_CENA, 0), 2) AS MNOZSTVO_V_PRVOM_ROKU,
+    ROUND(A2.PRIEMERNA_MZDA / NULLIF(A2.PRIEMERNA_CENA, 0), 2) AS MNOZSTVO_V_POSLEDNOM_ROKU
+FROM ROKY R
+JOIN AGREG A1
+    ON A1.ROK = R.PRVY_ROK
+JOIN AGREG A2
+    ON A2.ROK = R.POSLEDNY_ROK
+   AND A1.POTRAVINA = A2.POTRAVINA
+WHERE A1.POTRAVINA IN (
     'Chléb konzumní kmínový',
     'Mléko polotučné pasterované'
 )
-ORDER BY a1.potravina;
+ORDER BY A1.POTRAVINA;
 
 
 -- ===============================================================
 -- 3) KTORÁ KATEGÓRIA POTRAVÍN ZDRAŽUJE NAJPOMALŠIE
---    (NAJNIŽŠÍ PRIEMERNÝ MEDZIROČNÝ PERCENTUÁLNY NÁRAST CENY)?
---
 -- Logika:
--- - Zjednodušíme dáta na: rok + potravina + priemerná cena.
--- - Vypočítame medziročnú zmenu ceny pre každú potravinu.
--- - Z týchto medziročných zmien spravíme priemer pre každú potravinu.
--- - Výsledok: potraviny zoradené od najnižšieho priemerného rastu (najpomalšie zdražovanie).
+--  - Agregujeme priemerné ceny na úroveň (rok, potravina).
+--  - V CTE vypočítame PREDSLA_CENA pomocou LAG() len raz.
+--  - Potom spočítame medziročnú zmenu (%) a z nich priemerný medziročný rast.
 -- ===============================================================
 
-WITH ceny_agg AS (
-    SELECT 
-        rok,
-        potravina,
-        AVG(priemerna_cena) AS priemerna_cena
+WITH CENY_AGG AS (
+    SELECT
+        ROK,
+        POTRAVINA,
+        AVG(PRIMERNA_CENA) AS PRIEMERNA_CENA
     FROM t_viktoria_cervenanska_project_SQL_primary_final
-    GROUP BY rok, potravina
+    GROUP BY ROK, POTRAVINA
 ),
-medzirocne_zmeny AS (
-    SELECT 
-        potravina,
-        rok,
-        priemerna_cena,
-        LAG(priemerna_cena) OVER (PARTITION BY potravina ORDER BY rok) AS predosla_cena
-    FROM ceny_agg
+CENY_LAG AS (
+    SELECT
+        POTRAVINA,
+        ROK,
+        PRIEMERNA_CENA,
+        LAG(PRIEMERNA_CENA) OVER (PARTITION BY POTRAVINA ORDER BY ROK) AS PREDSLA_CENA
+    FROM CENY_AGG
+),
+CENY_ZMENY AS (
+    SELECT
+        POTRAVINA,
+        ROK,
+        PRIEMERNA_CENA,
+        PREDSLA_CENA,
+        CASE
+            WHEN PREDSLA_CENA IS NULL OR PREDSLA_CENA = 0 THEN NULL
+            ELSE (PRIEMERNA_CENA - PREDSLA_CENA) / PREDSLA_CENA * 100
+        END AS MEDZIROCNA_ZMENA_PERCENT
+    FROM CENY_LAG
 )
-SELECT 
-    potravina,
-    ROUND(AVG((priemerna_cena - predosla_cena) / predosla_cena * 100), 2) 
-        AS priemerny_medzirocny_rast_ceny_percent
-FROM medzirocne_zmeny
-WHERE predosla_cena IS NOT NULL
-GROUP BY potravina
-ORDER BY priemerny_medzirocny_rast_ceny_percent ASC
-LIMIT 10;  
+SELECT
+    POTRAVINA,
+    ROUND(AVG(MEDZIROCNA_ZMENA_PERCENT)::NUMERIC, 2) AS PRIEMERNY_MEDZIROCNY_RST_CENY_PERCENT
+FROM CENY_ZMENY
+WHERE MEDZIROCNA_ZMENA_PERCENT IS NOT NULL
+GROUP BY POTRAVINA
+ORDER BY PRIEMERNY_MEDZIROCNY_RST_CENY_PERCENT ASC
+LIMIT 10;
+
 
 -- ===============================================================
 -- 4) EXISTUJE ROK, V KTOROM BOL MEDZIROČNÝ NÁRAST CIEN POTRAVÍN
 --    VÝRAZNE VYŠŠÍ AKO RAST MIEZD (VIAC AKO O 10 PERCENTNÝCH BODOV)?
---
 -- Logika:
--- - Spočítame priemernú mzdu za rok naprieč všetkými odvetviami a potravinami.
--- - Spočítame priemernú cenu za rok naprieč všetkými potravinami a odvetviami.
--- - Z toho medziročné % zmeny (rast miezd, rast cien).
--- - Potom hľadáme roky, kde (rast cien - rast miezd) > 10 percentuálnych bodov.
+--  - Vypočítame priemerné ročné hodnoty pre mzdy a ceny.
+--  - Pomocou JOIN medzi rokmi získame medziročné % pre oba ukazovatele.
+--  - Potom spočítame rozdiel a označíme, či prekračuje 10 p.b.
 -- ===============================================================
 
-WITH rast_miezd AS (
-    -- Priemerná mzda za rok naprieč všetkými odvetviami a potravinami
-    SELECT 
-        rok, 
-        AVG(priemerna_mzda) AS avg_mzda
+WITH RAST_MIEZD AS (
+    SELECT
+        ROK,
+        AVG(PRIMERNA_MZDA) AS AVG_MZDA
     FROM t_viktoria_cervenanska_project_SQL_primary_final
-    GROUP BY rok
+    GROUP BY ROK
 ),
-rast_cien AS (
-    -- Priemerná cena za rok naprieč všetkými potravinami a odvetviami
-    SELECT 
-        rok, 
-        AVG(priemerna_cena) AS avg_cena
+RAST_CIEN AS (
+    SELECT
+        ROK,
+        AVG(PRIMERNA_CENA) AS AVG_CENA
     FROM t_viktoria_cervenanska_project_SQL_primary_final
-    GROUP BY rok
+    GROUP BY ROK
 ),
-medzirocne_rasty AS (
-    -- Spočítame medziročný % rast miezd a cien pre každý rok
-    SELECT 
-        r2.rok,
-        ((r2.avg_cena - r1.avg_cena) / r1.avg_cena * 100) AS rast_cien_percent,
-        ((m2.avg_mzda - m1.avg_mzda) / m1.avg_mzda * 100) AS rast_miezd_percent
-    FROM rast_cien r1
-    JOIN rast_cien r2 ON r2.rok = r1.rok + 1
-    JOIN rast_miezd m1 ON m1.rok = r1.rok
-    JOIN rast_miezd m2 ON m2.rok = r2.rok
+RASTY_PRE AS (
+    -- Prepočítame medziročný rast pre mzdy a ceny raz (pomocou join R1->R2)
+    SELECT
+        R2.ROK AS ROK,
+        (R2.AVG_CENA - R1.AVG_CENA) / NULLIF(R1.AVG_CENA, 0) * 100 AS RAST_CIEN_PERCENT,
+        (M2.AVG_MZDA - M1.AVG_MZDA) / NULLIF(M1.AVG_MZDA, 0) * 100 AS RAST_MIEZD_PERCENT
+    FROM RAST_CIEN R1
+    JOIN RAST_CIEN R2 ON R2.ROK = R1.ROK + 1
+    JOIN RAST_MIEZD M1 ON M1.ROK = R1.ROK
+    JOIN RAST_MIEZD M2 ON M2.ROK = R2.ROK
 )
-SELECT 
-    rok,
-    ROUND(rast_cien_percent, 2) AS rast_cien_percent,
-    ROUND(rast_miezd_percent, 2) AS rast_miezd_percent,
-    ROUND(rast_cien_percent - rast_miezd_percent, 2) AS rozdiel_percent,
-    CASE 
-        WHEN rast_cien_percent - rast_miezd_percent > 10 THEN true
-        ELSE false
-    END AS vyrazne_vyssi_rast_cien
-FROM medzirocne_rasty
-ORDER BY rok;
+SELECT
+    ROK,
+    ROUND(RAST_CIEN_PERCENT::NUMERIC, 2) AS RAST_CIEN_PERCENT,
+    ROUND(RAST_MIEZD_PERCENT::NUMERIC, 2) AS RAST_MIEZD_PERCENT,
+    ROUND((RAST_CIEN_PERCENT - RAST_MIEZD_PERCENT)::NUMERIC, 2) AS ROZDIEL_PERCENT,
+    CASE
+        WHEN (RAST_CIEN_PERCENT - RAST_MIEZD_PERCENT) > 10 THEN TRUE
+        ELSE FALSE
+    END AS VYRAZNE_VYSSI_RST_CIEN
+FROM RASTY_PRE
+ORDER BY ROK;
 
 
 -- ===============================================================
 -- 5) MÁ VÝŠKA HDP VPLYV NA ZMENY V MZDÁCH A CENÁCH POTRAVÍN?
---
 -- Logika:
--- - Pre Česko (Czechia) spojíme tabuľku HDP s primárnou tabuľkou podľa roku.
--- - Pre každý rok vypočítame priemernú mzdu a priemernú cenu potravín.
--- - Výsledok je dataset, ktorý sa dá použiť na analýzu vzťahu:
---     HDP vs. priemerná mzda / priemerná cena (napr. v grafe alebo korelácii).
+--  - Vyberieme údaje o HDP pre CR zo sekundárnej tabuľky (HDP + medziročný rast).
+--  - Spojíme ich s priemernými mzdami a cenami z primárnej tabuľky podľa roku.
+--  - Pre každý rok vypočítame priemernú mzdu a priemernú cenu.
+--  - Výsledok slúži ako vstup do ďalšej analýzy (graf, korelácia).
 -- ===============================================================
 
-SELECT 
-    s.country,
-    s.year AS rok,
-    s.hdp,
-    s.hdp_rocny_rust_pct,
-    ROUND(AVG(p.priemerna_mzda), 2) AS priemerna_mzda,
-    ROUND(AVG(p.priemerna_cena), 2) AS priemerna_cena
-FROM t_viktoria_cervenanska_project_SQL_secondary_final s
-JOIN t_viktoria_cervenanska_project_SQL_primary_final p
-    ON s.year = p.rok
--- pokryjeme viaceré možné názvy ČR v zdrojových dátach
-WHERE s.country ILIKE 'Czech%' 
-GROUP BY s.country, s.year, s.hdp, s.hdp_rocny_rust_pct
-ORDER BY s.year;
+WITH HDP_CR AS (
+    SELECT
+        COUNTRY,
+        YEAR,
+        HDP,
+        -- medziročný rast HDP počítame raz; NULLIF pre denominátor
+        ROUND((
+            (HDP - LAG(HDP) OVER (PARTITION BY COUNTRY ORDER BY YEAR))
+            / NULLIF(LAG(HDP) OVER (PARTITION BY COUNTRY ORDER BY YEAR), 0) * 100
+        )::NUMERIC, 2) AS HDP_ROCNY_RST_PCT
+    FROM t_viktoria_cervenanska_project_SQL_secondary_final
+    WHERE COUNTRY ILIKE 'Czech%'
+),
+PRIEMERNE_R AS (
+    SELECT
+        ROK,
+        ROUND(AVG(PRIMERNA_MZDA)::NUMERIC, 2) AS PRIEMERNA_MZDA,
+        ROUND(AVG(PRIMERNA_CENA)::NUMERIC, 2) AS PRIEMERNA_CENA
+    FROM t_viktoria_cervenanska_project_SQL_primary_final
+    GROUP BY ROK
+)
+SELECT
+    H.COUNTRY,
+    H.YEAR AS ROK,
+    H.HDP,
+    H.HDP_ROCNY_RST_PCT,
+    P.PRIEMERNA_MZDA,
+    P.PRIEMERNA_CENA
+FROM HDP_CR H
+JOIN PRIEMERNE_R P
+    ON H.YEAR = P.ROK
+ORDER BY H.YEAR;
